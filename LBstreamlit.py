@@ -253,9 +253,9 @@ for tstep in range(maxIter):
             arr = np.transpose(np.sqrt(u[0,:,:]**2+u[1,:,:]**2))*(1.0-np.transpose(binary)) #np.random.normal(1, 1, size=100)
             arr = arr-uBCLB*np.transpose(binary)
 # vorticity
-            vorticity=calc_vorticity()
-            arr = np.transpose(vorticity)*(1.0-np.transpose(binary)) #np.random.normal(1, 1, size=100)
-            arr = arr-uBCLB*np.transpose(binary)
+#            vorticity=calc_vorticity()
+#            arr = np.transpose(vorticity)*(1.0-np.transpose(binary)) #np.random.normal(1, 1, size=100)
+#            arr = arr-uBCLB*np.transpose(binary)
 #
             fig = px.imshow(
                     arr,color_continuous_scale='RdBu_r', aspect='equal',title=stringy,
