@@ -6,7 +6,7 @@ import plotly.express as px  # interactive charts
 
 st.set_page_config(
     page_title="2D LB simulation of von Karman streets",
-    page_icon="✅",
+#    page_icon="✅",
     layout="wide",
 )
 
@@ -53,7 +53,7 @@ def obstacle_def(r):
 # inside obstacle
 #                inside_obs[i,j]=True
                 binary_obs[i,j]=1
-            if( fin_yes_no == 'Yes' and i>x0 and i-x0<3.0*r and j==y0 ):
+            if( fin_yes_no == 'Yes' and i>x0 and i-x0<4.0*r and j==y0 ):
 # inside 'fin' extension of obstacle
                 inside_obs[i,j]=True
                 binary_obs[i,j]=1               
