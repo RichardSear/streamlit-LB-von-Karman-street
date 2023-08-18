@@ -64,14 +64,105 @@ def obstacle_def(r):
 def calc_vorticity():
     vorticity = (np.roll(u[1,:,:], -1, axis=0) - np.roll(u[1,:,:], 1, axis=0)) - \
           (np.roll(u[0,:,:], -1, axis=1) - np.roll(u[0,:,:], 1, axis=1))
-    print('min max vorticities ',np.amin(vorticity),np.amax(vorticity))
+#    print('min max vorticities ',np.amin(vorticity),np.amax(vorticity))
     return vorticity
+#
+# define function to do colourmap for vorticity or speed using RGB
+# note px.imshow does not have alpha as pyplot has
+#
+def vort_speed_cmap(vort_map):
+# rgb obstacle
+    rgb_obs=np.array([10,255,10],dtype=int)
+#
+    image_array=np.zeros((ny,nx,3))
+    for ix in range(0,nx):
+        for iy in range(0,ny):
+            if(obstacle[ix,iy]):
+# inside obstacle
+                image_array[iy,ix,:]=rgb_obs
+            else:
+# in fluid
+# map vorticity
+                if(vort_map):
+                    mag255=int(np.abs(round(500*vorticity[ix,iy]/uBCLB,0)))
+                    little=int(mag255/20)
+                    if(vorticity[ix,iy]>0.0):
+                        image_array[iy,ix,:]=np.array([0,little,mag255])
+                    else:
+                        image_array[iy,ix,:]=np.array([mag255,little,0])
+# map speed
+                else:
+                    speed=np.sqrt(u[0,ix,iy]**2+u[1,ix,iy]**2)
+                    mag255=int(np.abs(round(300*speed/uBCLB,0)))
+                    image_array[iy,ix,:]=np.array([0,mag255,mag255])
+#            print(ix,iy,image_array[iy,ix,:],vorticity[ix,iy])
+    return image_array
+#
+# define function to do one LB step
+#
+def onestep(fin,u):
+# Right wall: outflow condition. Set LB f in last two row on RHS to be equal
+# i_set_neg_ux are the 3 vectors with negative x components
+# in previous step PBCs will have set these values to values from LH, which need to be
+# overwritten
+    fin[i_set_neg_ux,-1,:] = fin[i_set_neg_ux,-2,:] 
+# sum the 9 components of fin on each lattice site to get density rho at each lattice site
+    rho = np.sum(fin,axis=0)         
+# Calculate velocity.
+#    u = np.dot(c.transpose(), fin.transpose((1,0,2)))/rho
+# here for using numpy's einsum, convention is: i is over q lattice vectors,
+# j=0 (x) and  1 (y) and m and n are over x and y lattice sites, respectively
+    u=np.einsum('imn,ij',fin,lattice_vec,optimize=True)/rho
+#    print(u.shape)
+#    ''
+#    Zou-He BC at left wall
+#    ''
+# Left wall (ie. at x=0): 1st impose velocity
+    u[0,0,:] = ux_x0BC
+    u[1,0,:] = 0.0
+# after streaming etc rho on left wall is wrong as np.roll applied PBCs there so fin
+# with is from i_set_pos_ux are wrong as they rolled round from right hand side
+# Zou and He (1997) showed that could compute rho starting from eqs for rho and u and
+# eliminating f with i in i_set_pos_ux to get equation:
+# compute density at left wall, ie for rho[0,:] overwrite values obtained by summing old fin above
+    rho[0,:] = 1./(1.-u[0,0,:]) * \
+          (np.sum(fin[i_set_0_ux,0,:],axis=0)+2.0*np.sum(fin[i_set_neg_ux,0,:],axis=0))
+#    '''
+#    now compute equilibrium fs, for all lattice including lh wal where we know have correct rho
+#    '''
+    feq = equilibrium(rho,u)
+# Left wall: Zou/He boundary condition
+# Note that we don't know the fin for is with positive u_x for lh wall sites
+# Zou-He said to apply bounce back but only to non-equil bit, eg apply
+# bounce back to f_6 - feq_6 etc so here
+# bounce back means f_6 - feq_6 = f_3 - feq_3, f_7 - feq_7 = f_4 - feq_4, f_8 - feq_8 = f_5 - feq_5
+    fin[i_set_pos_ux,0,:] = fin[i_set_neg_ux,0,:] + feq[i_set_pos_ux,0,:] - feq[i_set_neg_ux,0,:]
+# NB can also write fin explictly in terms of know fins, rho and u, see 1997 paper of Zou-He
+# that is equivalent to just applying boundeback to non-equil parts of the three f_i, i=6,7,8 
+# as we do here
+# NB2 In original Palabos code last feq in line above is fin, so fin is just set equal to
+# feq at given rho and u, i.e., Palabos code does not quite implement Zou-He BC
+# but this difference seems to have very little affect, get same results with it as with
+# normal Zou-He BC
+# Collision step
+    fout = fin - omega * (fin - feq)
+# BCs at obstacles: flip all vectors for all cells in obstacle
+# eg f for [0 -1] becomes f for [0 1]
+    for i in range(q): 
+        fout[i,obstacle] = fin[noslip[i],obstacle]
+# Streaming step with PBCs implemented using numpy#'s roll command
+    for i in range(q):
+        fin[i,:,:] = np.roll(np.roll(fout[i,:,:],lattice_vec[i,0],axis=0),lattice_vec[i,1],axis=1)
+    return fin,u
+
+
+
+
+
 
 #
 # time run
 tstart = time.time()
-
- 
 # lattice size, flow is along x axis, periodic boundary conditions along y
 nx = 240
 ny = 80
@@ -82,12 +173,23 @@ print('radius of discs in lattice units ',round(r,2))
 # to give this value of Re, at flow speed that is small, LB simulations are only stable
 # at speeds << 1 in LB units. NB speed of sound is of order unity
 Re = 60
-Re = st.slider('What value of the Reynolds do you want?', 1, 200, 10)
+Re = st.slider('What value of the Reynolds number do you want?', 1, 200, 10)
 #st.write(Re)
 print('Reynolds number for flow round cylinder (diameter as lengthscale) ',round(Re,2))
 fin_yes_no = st.radio(
     "Fin at the back of the disc?",
-    ('Yes', 'No',))
+    ('No', 'Yes'))
+#
+vort_map_yes_no = st.radio(
+    "plot colourscale for?",
+    ('Speed', 'Vorticity'))
+vort_map=True
+string_cmap=' colour scheme is max -ve vorticity (red) to max +v vorticity (blue)'
+if(vort_map_yes_no=='Speed'): 
+    vort_map=False
+    string_cmap=' colour scheme is zero speed (black) to fastest speed (bright teal)'
+
+#
 #
 uBCLB     = 0.04                       # Velocity in lattice units.
 print('x velocity imposed at LH boundary in LB units ',uBCLB,' must be << 1')
@@ -182,63 +284,6 @@ fin = feq.copy()
 #one_sixth=1.0//6.0
 
 
-def onestep(fin,u):
-# Right wall: outflow condition. Set LB f in last two row on RHS to be equal
-# i_set_neg_ux are the 3 vectors with negative x components
-# in previous step PBCs will have set these values to values from LH, which need to be
-# overwritten
-    fin[i_set_neg_ux,-1,:] = fin[i_set_neg_ux,-2,:] 
-# sum the 9 components of fin on each lattice site to get density rho at each lattice site
-    rho = np.sum(fin,axis=0)         
-# Calculate velocity.
-#    u = np.dot(c.transpose(), fin.transpose((1,0,2)))/rho
-# here for using numpy's einsum, convention is: i is over q lattice vectors,
-# j=0 (x) and  1 (y) and m and n are over x and y lattice sites, respectively
-    u=np.einsum('imn,ij',fin,lattice_vec,optimize=True)/rho
-#    print(u.shape)
-#    ''
-#    Zou-He BC at left wall
-#    ''
-# Left wall (ie. at x=0): 1st impose velocity
-    u[0,0,:] = ux_x0BC
-    u[1,0,:] = 0.0
-# after streaming etc rho on left wall is wrong as np.roll applied PBCs there so fin
-# with is from i_set_pos_ux are wrong as they rolled round from right hand side
-# Zou and He (1997) showed that could compute rho starting from eqs for rho and u and
-# eliminating f with i in i_set_pos_ux to get equation:
-# compute density at left wall, ie for rho[0,:] overwrite values obtained by summing old fin above
-    rho[0,:] = 1./(1.-u[0,0,:]) * \
-          (np.sum(fin[i_set_0_ux,0,:],axis=0)+2.0*np.sum(fin[i_set_neg_ux,0,:],axis=0))
-#    '''
-#    now compute equilibrium fs, for all lattice including lh wal where we know have correct rho
-#    '''
-    feq = equilibrium(rho,u)
-# Left wall: Zou/He boundary condition
-# Note that we don't know the fin for is with positive u_x for lh wall sites
-# Zou-He said to apply bounce back but only to non-equil bit, eg apply
-# bounce back to f_6 - feq_6 etc so here
-# bounce back means f_6 - feq_6 = f_3 - feq_3, f_7 - feq_7 = f_4 - feq_4, f_8 - feq_8 = f_5 - feq_5
-    fin[i_set_pos_ux,0,:] = fin[i_set_neg_ux,0,:] + feq[i_set_pos_ux,0,:] - feq[i_set_neg_ux,0,:]
-# NB can also write fin explictly in terms of know fins, rho and u, see 1997 paper of Zou-He
-# that is equivalent to just applying boundeback to non-equil parts of the three f_i, i=6,7,8 
-# as we do here
-# NB2 In original Palabos code last feq in line above is fin, so fin is just set equal to
-# feq at given rho and u, i.e., Palabos code does not quite implement Zou-He BC
-# but this difference seems to have very little affect, get same results with it as with
-# normal Zou-He BC
-# Collision step
-    fout = fin - omega * (fin - feq)
-# BCs at obstacles: flip all vectors for all cells in obstacle
-# eg f for [0 -1] becomes f for [0 1]
-    for i in range(q): 
-        fout[i,obstacle] = fin[noslip[i],obstacle]
-# Streaming step with PBCs implemented using numpy#'s roll command
-    for i in range(q):
-        fin[i,:,:] = np.roll(np.roll(fout[i,:,:],lattice_vec[i,0],axis=0),lattice_vec[i,1],axis=1)
-    return fin,u
-
-
-
 
 
 # creating a single-element container
@@ -248,20 +293,26 @@ for tstep in range(maxIter):
     fin,u=onestep(fin,u)
     if(tstep > 100 and tstep%subIter == 0):
         with placeholder.container():
-            stringy='Re ='+'{:.0f}'.format(round(Re, 0))+'   t/(d/u) = '+'{:.2f}'.format(round(tstep/T_d, 2))
+            stringy='Re ='+'{:.0f}'.format(round(Re, 0)) + \
+            '   t/(d/u) = '+'{:.2f}'.format(round(tstep/T_d, 2)) + string_cmap
 # magnitude of velocity            
-            arr = np.transpose(np.sqrt(u[0,:,:]**2+u[1,:,:]**2))*(1.0-np.transpose(binary)) #np.random.normal(1, 1, size=100)
+            arr = np.transpose(np.sqrt(u[0,:,:]**2+u[1,:,:]**2))*(1.0-np.transpose(binary))
             arr = arr-uBCLB*np.transpose(binary)
 # vorticity
-#            vorticity=calc_vorticity()
-#            arr = np.transpose(vorticity)*(1.0-np.transpose(binary)) #np.random.normal(1, 1, size=100)
+            vorticity=calc_vorticity()
+            arr = np.transpose(vorticity)*(1.0-np.transpose(binary))
 #            arr = arr-uBCLB*np.transpose(binary)
 #
+            image_array=vort_speed_cmap(vort_map)
             fig = px.imshow(
-                    arr,color_continuous_scale='RdBu_r', aspect='equal',title=stringy,
-                    zmin=-uBCLB,zmax=1.5*uBCLB
+#                    arr,color_continuous_scale='RdBu_r',
+                    image_array,zmin=0,zmax=255,
+                    aspect='equal',title=stringy,
+#                    zmin=-uBCLB,zmax=1.0*uBCLB
                 )
             fig.update_layout(coloraxis_showscale=False)
 #        st.markdown(stringy)
-            st.write(fig)    
+            st.write(fig)
+            stringy2='lattice nx = '+str(nx)+' by ny = '+str(ny)+' sites with disc radius '+str(r)+' sites'
+            st.write(stringy2)
         time.sleep(0.001)
